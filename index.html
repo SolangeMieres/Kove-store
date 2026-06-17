@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>KOVE — Moda Premium</title>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
+  <script src="https://sdk.mercadopago.com/js/v2"></script>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+    import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyDraxRSMlMn5sKX50nJSSBKigUcJAGv8hg",
+      authDomain: "kove-store-b8a9a.firebaseapp.com",
+      projectId: "kove-store-b8a9a",
+      storageBucket: "kove-store-b8a9a.firebasestorage.app",
+      messagingSenderId: "751629905194",
+      appId: "1:751629905194:web:e9aa0685963d33a6cc8253"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+    const auth = getAuth(app);
+
+    let cart = [];
+    let products = [];
+    let currentUser = null;
+
+    function formatPrice(n) {
+      return '$' + Number(n).toLocaleString('es-AR');
+    }
+
+    // ── PRODUCTOS ──────────────────────────────────────────
+    function renderProducts(prods) {
+      const grid = document.getElementById('productsGrid');
+      if (prods.length === 0) {
+        grid.innerHTML = '<p style="color:var(--grey-mid);text-align:center;padding:3rem;grid-column:1/-1;font-family:\'Cormorant Garamond\',serif;font-style:italic;font-size:1.2rem;">Pronto nuevos productos...</p>';
+        return;
+      }
+      grid.innerHTML = prods.map(p => `
+        <div class="product-card">
+          <div class="product-img">
+            ${p.img
+              ? `<img src="${p.img}" alt="${p.name}" style="width:100%;height:100%;object-fit:cover;transition:transform 0.6s ease;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">`
+              : `<div class="product-placeholder">👗</div>`}
+            <div class="product-overlay">
+              <button class="add-to-cart" onclick="window.addToCart('${p.id}')">Agregar</button>
+            </div>
+          </div>
+          <div class="product-info">
+            <div>
+              <div class="product-name">${p.name}</div>
+              <div class="product-tag">${p.tag || ''}</div>
+            </div>
+            <div class="product-price">${formatPrice(p.price)}</div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function listenProducts() {
+      onSnapshot(collection(db, 'productos'), (snapshot) => {
+        products = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        renderProducts(products);
+        renderAdminList(products);
+      });
+    }
+
+    // ── CARRITO ────────────────────────────────────────────
+    window.addToCart = function(id) {
+      const product = products.find(p => p.id === id);
+      if (!product) return;
+      const existing = cart.find(i => i.id === id);
+      if (existing) existing.qty++;
+      else cart.push({ ...product, qty: 1 });
+      updateCart();
+      showToast(`${product.name} agregado`);
+    }
+
+    window.removeFromCart = function(id) {
+      cart = cart.filter(i => i.id !== id);
+      updateCart();
+    }
+
+    function updateCart() {
+      const countEl = document.getElementById('cartCount');
+      const totalEl = document.getElementById('cartTotal');
+      const itemsEl = document.getElementById('cartItems');
+      const total = cart.reduce((s, i) => s + Number(i.price) * i.qty, 0);
+      const count = cart.reduce((s, i) => s + i.qty, 0);
+      countEl.textContent = count;
+      countEl.classList.toggle('visible', count > 0);
+      totalEl.textContent = formatPrice(total);
+      if (cart.length === 0) {
+        itemsEl.innerHTML = '<p class="cart-empty">Tu carrito está vacío.</p>';
+      } else {
+        itemsEl.innerHTML = cart.map(item => `
+          <div class="cart-item">
+            <div class="cart-item-icon">
+              ${item.img ? `<img src="${item.img}" style="width:60px;height:75px;object-fit:cover;">` : '👗'}
+            </div>
+            <div class="cart-item-details">
+              <div class="cart-item-name">${item.name}${item.qty > 1 ? ` ×${item.qty}` : ''}</div>
+              <div class="cart-item-price">${formatPrice(Number(item.price) * item.qty)}</div>
+              <button class="cart-item-remove" onclick="window.removeFromCart('${item.id}')">Eliminar</button>
+            </div>
+          </div>
+        `).join('');
+      }
+    }
+
+    window.toggleCart = function() {
+      document.getElementById('cartPanel').classList.toggle('open');
+      document.getElementById('cartBackdrop').classList.toggle('visible');
+    }
+
+    window.checkout = function() {
+      if (cart.length === 0) { showToast('Agregá productos primero'); return; }
+      showToast('Redirigiendo a MercadoPago...');
+      setTimeout(() => window.open('https://link.mercadopago.com.ar/kovecompra', '_blank'), 1000);
+    }
+
+    // ── ADMIN ──────────────────────────────────────────────
+    window.toggleAdmin = function() {
+      const panel = document.getElementById('adminPanel');
+      if (panel.classList.contains('open')) {
+        panel.classList.remove('open');
+        return;
+      }
+      panel.classList.add('open');
+      if (!currentUser) {
+        showAdminView('login');
+      } else {
+        showAdminView('panel');
+      }
+    }
+
+    function showAdminView(view) {
+      document.getElementById('adminLogin').style.display = view === 'login' ? 'flex' : 'none';
+      document.getElementById('adminContent').style.display = view === 'panel' ? 'flex' : 'none';
+    }
+
+    window.adminLogin = async function() {
+      const email = document.getElementById('adminEmail').value.trim();
+      const pass = document.getElementById('adminPass').value;
+      const btn = document.getElementById('adminLoginBtn');
+      const err = document.getElementById('adminLoginError');
+      err.textContent = '';
+      btn.textContent = 'Ingresando...';
+      btn.disabled = true;
+      try {
+        await signInWithEmailAndPassword(auth, email, pass);
+      } catch(e) {
+        err.textContent = 'Email o contraseña incorrectos.';
+        btn.textContent = 'Ingresar';
+        btn.disabled = false;
+      }
+    }
+
+    window.adminLogout = async function() {
+      await signOut(auth);
+      showAdminView('login');
+      showToast('Sesión cerrada');
+    }
+
+    onAuthStateChanged(auth, (user) => {
+      currentUser = user;
+      if (user) {
+        document.getElementById('adminUserEmail').textContent = user.email;
+        showAdminView('panel');
+      } else {
+        showAdminView('login');
+      }
+    });
+
+    function renderAdminList(prods) {
+      const list = document.getElementById('adminProductList');
+      if (!list) return;
+      if (prods.length === 0) {
+        list.innerHTML = '<p style="color:var(--grey-mid);font-size:0.8rem;text-align:center;padding:1rem;">Sin productos aún.</p>';
+        return;
+      }
+      list.innerHTML = prods.map(p => `
+        <div class="admin-product-item">
+          <div style="display:flex;align-items:center;gap:0.8rem;flex:1;min-width:0;">
+            ${p.img
+              ? `<img src="${p.img}" style="width:40px;height:50px;object-fit:cover;flex-shrink:0;">`
+              : '<div style="width:40px;height:50px;background:var(--grey-dark);flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:1.2rem;">👗</div>'}
+            <div style="min-width:0;">
+              <div style="font-family:'Cormorant Garamond',serif;font-size:0.95rem;color:var(--bone);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${p.name}</div>
+              <div style="font-size:0.72rem;color:var(--gold);">${formatPrice(p.price)}</div>
+            </div>
+          </div>
+          <button onclick="window.deleteProduct('${p.id}')" style="background:none;border:1px solid #c0392b;color:#c0392b;padding:0.3rem 0.7rem;font-size:0.65rem;letter-spacing:0.1em;cursor:pointer;font-family:'DM Sans',sans-serif;flex-shrink:0;">BORRAR</button>
+        </div>
+      `).join('');
+    }
+
+    window.deleteProduct = async function(id) {
+      if (!confirm('¿Borrar este producto?')) return;
+      try {
+        await deleteDoc(doc(db, 'productos', id));
+        showToast('Producto eliminado');
+      } catch(e) {
+        showToast('Error al eliminar');
+      }
+    }
+
+    window.saveProduct = async function() {
+      const name = document.getElementById('adminName').value.trim();
+      const tag = document.getElementById('adminTag').value.trim();
+      const price = document.getElementById('adminPrice').value.trim();
+      const img = document.getElementById('adminImg').value.trim();
+      if (!name || !price) { showToast('Nombre y precio son obligatorios'); return; }
+      const btn = document.getElementById('adminSaveBtn');
+      btn.textContent = 'Guardando...';
+      btn.disabled = true;
+      try {
+        await addDoc(collection(db, 'productos'), { name, tag, price: Number(price), img, createdAt: Date.now() });
+        document.getElementById('adminName').value = '';
+        document.getElementById('adminTag').value = '';
+        document.getElementById('adminPrice').value = '';
+        document.getElementById('adminImg').value = '';
+        showToast('¡Producto agregado!');
+      } catch(e) {
+        showToast('Error al guardar — verificá las reglas de Firestore');
+        console.error(e);
+      }
+      btn.textContent = 'Agregar producto';
+      btn.disabled = false;
+    }
+
+    // ── TOAST & INIT ───────────────────────────────────────
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 3000);
+    }
+
+    listenProducts();
+
+    // Atajo secreto admin: A + D + M al mismo tiempo
+    const keysPressed = new Set();
+    document.addEventListener('keydown', (e) => {
+      keysPressed.add(e.key.toLowerCase());
+      if (keysPressed.has('a') && keysPressed.has('d') && keysPressed.has('m')) {
+        toggleAdmin();
+        keysPressed.clear();
+      }
+    });
+    document.addEventListener('keyup', (e) => keysPressed.delete(e.key.toLowerCase()));
+  </script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --black: #0d0d0d; --charcoal: #1a1a1a; --grey-dark: #2c2c2c;
+      --grey-mid: #555; --grey-light: #aaa; --bone: #e8e2d9;
+      --white: #f5f3f0; --gold: #c9a96e; --gold-light: #e0c896;
+    }
+    html { scroll-behavior: smooth; }
+    body { background: var(--black); color: var(--bone); font-family: 'DM Sans', sans-serif; font-weight: 300; line-height: 1.6; overflow-x: hidden; }
+
+    nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; display: flex; align-items: center; justify-content: space-between; padding: 1.4rem 3rem; background: rgba(13,13,13,0.92); backdrop-filter: blur(12px); border-bottom: 1px solid rgba(201,169,110,0.15); }
+    .nav-logo { font-family: 'Cormorant Garamond', serif; font-size: 1.8rem; font-weight: 300; letter-spacing: 0.35em; color: var(--bone); text-decoration: none; cursor: pointer; }
+    .nav-links { display: flex; gap: 2.5rem; list-style: none; }
+    .nav-links a { color: var(--grey-light); text-decoration: none; font-size: 0.72rem; letter-spacing: 0.2em; text-transform: uppercase; transition: color 0.2s; cursor: pointer; }
+    .nav-links a:hover { color: var(--bone); }
+    .nav-right { display: flex; align-items: center; gap: 1rem; }
+    .cart-btn { background: none; border: 1px solid rgba(201,169,110,0.4); color: var(--gold); padding: 0.5rem 1.2rem; font-size: 0.72rem; letter-spacing: 0.15em; text-transform: uppercase; cursor: pointer; transition: all 0.2s; font-family: 'DM Sans', sans-serif; position: relative; }
+    .cart-btn:hover { background: var(--gold); color: var(--black); }
+    .cart-count { position: absolute; top: -6px; right: -6px; background: var(--gold); color: var(--black); width: 16px; height: 16px; border-radius: 50%; font-size: 0.6rem; display: flex; align-items: center; justify-content: center; font-weight: 500; opacity: 0; transition: opacity 0.2s; }
+    .cart-count.visible { opacity: 1; }
+    .admin-btn { background: none; border: none; color: var(--grey-mid); font-size: 0.65rem; letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer; font-family: 'DM Sans', sans-serif; transition: color 0.2s; padding: 0.3rem; }
+    .admin-btn:hover { color: var(--gold); }
+
+    .hero { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 8rem 2rem 4rem; position: relative; overflow: hidden; }
+    .hero::before { content: ''; position: absolute; inset: 0; background: radial-gradient(ellipse at center, rgba(201,169,110,0.06) 0%, transparent 70%); pointer-events: none; }
+    .hero-eyebrow { font-size: 0.68rem; letter-spacing: 0.4em; text-transform: uppercase; color: var(--gold); margin-bottom: 2rem; }
+    .hero-title { font-family: 'Cormorant Garamond', serif; font-size: clamp(4rem, 12vw, 10rem); font-weight: 300; line-height: 0.9; color: var(--bone); margin-bottom: 2rem; }
+    .hero-title em { font-style: italic; color: var(--gold-light); }
+    .hero-sub { font-size: 0.85rem; color: var(--grey-light); letter-spacing: 0.1em; max-width: 380px; margin: 0 auto 3rem; line-height: 1.8; }
+    .hero-cta { display: inline-block; padding: 1rem 3rem; border: 1px solid var(--gold); color: var(--gold); font-size: 0.72rem; letter-spacing: 0.25em; text-transform: uppercase; transition: all 0.3s; cursor: pointer; background: none; font-family: 'DM Sans', sans-serif; }
+    .hero-cta:hover { background: var(--gold); color: var(--black); }
+    .hero-scroll { position: absolute; bottom: 2.5rem; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 0.5rem; color: var(--grey-mid); font-size: 0.65rem; letter-spacing: 0.2em; text-transform: uppercase; }
+    .scroll-line { width: 1px; height: 40px; background: linear-gradient(to bottom, var(--gold), transparent); animation: scrollPulse 2s ease-in-out infinite; }
+    @keyframes scrollPulse { 0%,100%{opacity:0.4}50%{opacity:1} }
+
+    .section-header { text-align: center; padding: 5rem 2rem 3rem; }
+    .section-eyebrow { font-size: 0.65rem; letter-spacing: 0.35em; text-transform: uppercase; color: var(--gold); margin-bottom: 1rem; }
+    .section-title { font-family: 'Cormorant Garamond', serif; font-size: clamp(2rem, 5vw, 3.5rem); font-weight: 300; color: var(--bone); }
+
+    .products { padding: 2rem 3rem 6rem; max-width: 1400px; margin: 0 auto; }
+    .products-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1.5px; background: var(--grey-dark); }
+    .product-card { background: var(--charcoal); position: relative; overflow: hidden; cursor: pointer; aspect-ratio: 3/4; display: flex; flex-direction: column; }
+    .product-img { flex: 1; display: flex; align-items: center; justify-content: center; background: var(--grey-dark); overflow: hidden; position: relative; }
+    .product-placeholder { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 5rem; color: var(--grey-mid); }
+    .product-overlay { position: absolute; inset: 0; background: rgba(13,13,13,0.7); display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity 0.3s; }
+    .product-card:hover .product-overlay { opacity: 1; }
+    .add-to-cart { background: none; border: 1px solid var(--bone); color: var(--bone); padding: 0.8rem 2rem; font-size: 0.68rem; letter-spacing: 0.2em; text-transform: uppercase; cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all 0.2s; }
+    .add-to-cart:hover { background: var(--bone); color: var(--black); }
+    .product-info { padding: 1.2rem 1.5rem; border-top: 1px solid var(--grey-dark); display: flex; justify-content: space-between; align-items: flex-end; }
+    .product-name { font-family: 'Cormorant Garamond', serif; font-size: 1.05rem; font-weight: 400; color: var(--bone); }
+    .product-tag { font-size: 0.6rem; letter-spacing: 0.15em; text-transform: uppercase; color: var(--grey-mid); margin-top: 0.2rem; }
+    .product-price { font-family: 'Cormorant Garamond', serif; font-size: 1.1rem; color: var(--gold); white-space: nowrap; }
+
+    .banner { padding: 5rem 3rem; text-align: center; border-top: 1px solid var(--grey-dark); border-bottom: 1px solid var(--grey-dark); position: relative; overflow: hidden; }
+    .banner::before { content: 'KOVE'; position: absolute; font-family: 'Cormorant Garamond', serif; font-size: 20rem; font-weight: 300; color: rgba(255,255,255,0.02); top: 50%; left: 50%; transform: translate(-50%,-50%); pointer-events: none; white-space: nowrap; }
+    .banner-title { font-family: 'Cormorant Garamond', serif; font-size: clamp(1.8rem, 4vw, 3rem); font-weight: 300; font-style: italic; color: var(--bone); margin-bottom: 1rem; }
+    .banner-sub { font-size: 0.8rem; color: var(--grey-light); letter-spacing: 0.1em; max-width: 400px; margin: 0 auto 2rem; }
+
+    footer { padding: 3rem; border-top: 1px solid var(--grey-dark); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
+    .footer-logo { font-family: 'Cormorant Garamond', serif; font-size: 1.4rem; font-weight: 300; letter-spacing: 0.3em; color: var(--gold); }
+    .footer-copy { font-size: 0.68rem; color: var(--grey-mid); }
+    .footer-links { display: flex; gap: 2rem; list-style: none; }
+    .footer-links a { color: var(--grey-mid); text-decoration: none; font-size: 0.68rem; transition: color 0.2s; }
+    .footer-links a:hover { color: var(--bone); }
+
+    .cart-panel { position: fixed; top: 0; right: -420px; width: 420px; height: 100vh; background: var(--charcoal); border-left: 1px solid var(--grey-dark); z-index: 200; transition: right 0.4s cubic-bezier(0.4,0,0.2,1); display: flex; flex-direction: column; }
+    .cart-panel.open { right: 0; }
+    .cart-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 199; opacity: 0; pointer-events: none; transition: opacity 0.3s; }
+    .cart-backdrop.visible { opacity: 1; pointer-events: all; }
+    .cart-header { padding: 2rem; border-bottom: 1px solid var(--grey-dark); display: flex; justify-content: space-between; align-items: center; }
+    .cart-title { font-family: 'Cormorant Garamond', serif; font-size: 1.5rem; font-weight: 300; color: var(--bone); }
+    .cart-close { background: none; border: none; color: var(--grey-light); font-size: 1.5rem; cursor: pointer; }
+    .cart-items { flex: 1; overflow-y: auto; padding: 1.5rem 2rem; }
+    .cart-item { display: flex; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid var(--grey-dark); }
+    .cart-item-icon { width: 60px; height: 75px; background: var(--grey-dark); display: flex; align-items: center; justify-content: center; font-size: 1.8rem; flex-shrink: 0; overflow: hidden; }
+    .cart-item-details { flex: 1; }
+    .cart-item-name { font-family: 'Cormorant Garamond', serif; font-size: 1rem; color: var(--bone); margin-bottom: 0.3rem; }
+    .cart-item-price { color: var(--gold); font-size: 0.85rem; }
+    .cart-item-remove { background: none; border: none; color: var(--grey-mid); cursor: pointer; font-size: 0.7rem; text-transform: uppercase; padding: 0; margin-top: 0.5rem; font-family: 'DM Sans', sans-serif; }
+    .cart-empty { text-align: center; padding: 3rem 0; color: var(--grey-mid); font-family: 'Cormorant Garamond', serif; font-size: 1.1rem; font-style: italic; }
+    .cart-footer { padding: 2rem; border-top: 1px solid var(--grey-dark); }
+    .cart-total { display: flex; justify-content: space-between; margin-bottom: 1.5rem; }
+    .cart-total-label { font-size: 0.72rem; letter-spacing: 0.2em; text-transform: uppercase; color: var(--grey-light); }
+    .cart-total-amount { font-family: 'Cormorant Garamond', serif; font-size: 1.3rem; color: var(--gold); }
+    .checkout-btn { width: 100%; padding: 1.1rem; background: var(--gold); color: var(--black); border: none; font-size: 0.72rem; letter-spacing: 0.25em; text-transform: uppercase; cursor: pointer; font-family: 'DM Sans', sans-serif; font-weight: 500; transition: background 0.2s; }
+    .checkout-btn:hover { background: var(--gold-light); }
+
+    /* ADMIN */
+    .admin-panel { position: fixed; top: 0; left: -480px; width: 480px; height: 100vh; background: var(--charcoal); border-right: 1px solid var(--grey-dark); z-index: 200; transition: left 0.4s cubic-bezier(0.4,0,0.2,1); display: flex; flex-direction: column; }
+    .admin-panel.open { left: 0; }
+    .admin-header { padding: 1.5rem 2rem; border-bottom: 1px solid var(--grey-dark); display: flex; justify-content: space-between; align-items: center; }
+    .admin-title { font-family: 'Cormorant Garamond', serif; font-size: 1.2rem; color: var(--gold); letter-spacing: 0.1em; }
+    .admin-close { background: none; border: none; color: var(--grey-light); font-size: 1.5rem; cursor: pointer; }
+
+    /* LOGIN */
+    #adminLogin { flex: 1; flex-direction: column; align-items: center; justify-content: center; padding: 3rem 2rem; gap: 1rem; }
+    .admin-login-title { font-family: 'Cormorant Garamond', serif; font-size: 1.4rem; color: var(--bone); margin-bottom: 0.5rem; text-align: center; }
+    .admin-login-sub { font-size: 0.72rem; color: var(--grey-mid); text-align: center; margin-bottom: 1.5rem; letter-spacing: 0.05em; }
+    .admin-input { width: 100%; background: var(--grey-dark); border: 1px solid var(--grey-mid); color: var(--bone); padding: 0.8rem 1rem; font-size: 0.82rem; font-family: 'DM Sans', sans-serif; outline: none; transition: border-color 0.2s; margin-bottom: 0.8rem; }
+    .admin-input:focus { border-color: var(--gold); }
+    .admin-input::placeholder { color: var(--grey-mid); }
+    .admin-save-btn { width: 100%; padding: 0.9rem; background: var(--gold); color: var(--black); border: none; font-size: 0.72rem; letter-spacing: 0.2em; text-transform: uppercase; cursor: pointer; font-family: 'DM Sans', sans-serif; font-weight: 500; transition: background 0.2s; }
+    .admin-save-btn:hover { background: var(--gold-light); }
+    .admin-save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .admin-error { color: #e74c3c; font-size: 0.75rem; text-align: center; min-height: 1rem; }
+
+    /* PANEL CONTENT */
+    #adminContent { flex: 1; flex-direction: column; overflow: hidden; }
+    .admin-user-bar { padding: 0.8rem 2rem; background: var(--grey-dark); display: flex; justify-content: space-between; align-items: center; }
+    .admin-user-email { font-size: 0.68rem; color: var(--gold); letter-spacing: 0.05em; }
+    .admin-logout { background: none; border: none; color: var(--grey-mid); font-size: 0.65rem; letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+    .admin-logout:hover { color: var(--bone); }
+    .admin-body { flex: 1; overflow-y: auto; padding: 1.5rem 2rem; display: flex; flex-direction: column; gap: 1.5rem; }
+    .admin-section-title { font-size: 0.65rem; letter-spacing: 0.2em; text-transform: uppercase; color: var(--gold); margin-bottom: 1rem; border-bottom: 1px solid var(--grey-dark); padding-bottom: 0.5rem; }
+    .admin-product-item { display: flex; align-items: center; gap: 1rem; padding: 0.8rem 0; border-bottom: 1px solid var(--grey-dark); }
+
+    .toast { position: fixed; bottom: 2rem; left: 50%; transform: translateX(-50%) translateY(100px); background: var(--charcoal); border: 1px solid var(--gold); color: var(--bone); padding: 0.9rem 2rem; font-size: 0.75rem; letter-spacing: 0.1em; z-index: 300; transition: transform 0.3s ease; white-space: nowrap; }
+    .toast.show { transform: translateX(-50%) translateY(0); }
+
+    @media (max-width: 768px) {
+      nav { padding: 1.2rem 1.5rem; }
+      .nav-links { display: none; }
+      .products { padding: 1rem 1rem 4rem; }
+      .products-grid { grid-template-columns: repeat(2, 1fr); gap: 1px; }
+      footer { flex-direction: column; text-align: center; }
+      .cart-panel { width: 100%; right: -100%; }
+      .admin-panel { width: 100%; left: -100%; }
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <a class="nav-logo" onclick="document.getElementById('inicio').scrollIntoView({behavior:'smooth'})">KOVE</a>
+  <ul class="nav-links">
+    <li><a onclick="document.getElementById('coleccion').scrollIntoView({behavior:'smooth'})">Colección</a></li>
+    <li><a href="#">Contacto</a></li>
+  </ul>
+  <div class="nav-right">
+    <button class="cart-btn" onclick="toggleCart()">
+      Carrito
+      <span class="cart-count" id="cartCount">0</span>
+    </button>
+  </div>
+</nav>
+
+<section class="hero" id="inicio">
+  <p class="hero-eyebrow">Nueva Colección — 2026</p>
+  <h1 class="hero-title">Tu estilo.<br><em>Tus</em><br>reglas.</h1>
+  <p class="hero-sub">Ropa que habla antes que vos. Para los que eligen con intención, no con tendencia.</p>
+  <button class="hero-cta" onclick="document.getElementById('coleccion').scrollIntoView({behavior:'smooth'})">Ver Colección</button>
+  <div class="hero-scroll"><div class="scroll-line"></div><span>Scroll</span></div>
+</section>
+
+<section id="coleccion">
+  <div class="section-header">
+    <p class="section-eyebrow">Selección actual</p>
+    <h2 class="section-title">La Colección</h2>
+  </div>
+  <div class="products">
+    <div class="products-grid" id="productsGrid">
+      <p style="color:var(--grey-mid);text-align:center;padding:3rem;grid-column:1/-1;font-family:'Cormorant Garamond',serif;font-style:italic;">Cargando productos...</p>
+    </div>
+  </div>
+</section>
+
+<section class="banner">
+  <h2 class="banner-title">No seguís la moda.<br><em>La moda te sigue a vos.</em></h2>
+  <p class="banner-sub">Encontrá las piezas que lo dicen todo — sin decir nada.</p>
+  <button class="hero-cta" onclick="document.getElementById('coleccion').scrollIntoView({behavior:'smooth'})">Explorar todo</button>
+</section>
+
+<footer>
+  <div class="footer-logo">KOVE</div>
+  <p class="footer-copy">© 2026 Kove. Buenos Aires, Argentina.</p>
+  <ul class="footer-links">
+    <li><a href="#">Instagram</a></li>
+    <li><a href="#">TikTok</a></li>
+    <li><a href="#">WhatsApp</a></li>
+  </ul>
+</footer>
+
+<div class="cart-backdrop" id="cartBackdrop" onclick="toggleCart()"></div>
+<div class="cart-panel" id="cartPanel">
+  <div class="cart-header">
+    <span class="cart-title">Tu Selección</span>
+    <button class="cart-close" onclick="toggleCart()">×</button>
+  </div>
+  <div class="cart-items" id="cartItems">
+    <p class="cart-empty">Tu carrito está vacío.</p>
+  </div>
+  <div class="cart-footer">
+    <div class="cart-total">
+      <span class="cart-total-label">Total</span>
+      <span class="cart-total-amount" id="cartTotal">$0</span>
+    </div>
+    <button class="checkout-btn" onclick="checkout()">Finalizar Compra</button>
+  </div>
+</div>
+
+<!-- ADMIN PANEL -->
+<div class="admin-panel" id="adminPanel">
+  <div class="admin-header">
+    <span class="admin-title">⚙ Admin — KOVE</span>
+    <button class="admin-close" onclick="toggleAdmin()">×</button>
+  </div>
+
+  <!-- LOGIN -->
+  <div id="adminLogin" style="display:none;">
+    <div class="admin-login-title">Acceso administración</div>
+    <p class="admin-login-sub">Solo para uso interno de Kove</p>
+    <input class="admin-input" id="adminEmail" type="email" placeholder="Email">
+    <input class="admin-input" id="adminPass" type="password" placeholder="Contraseña" onkeydown="if(event.key==='Enter')adminLogin()">
+    <p class="admin-error" id="adminLoginError"></p>
+    <button class="admin-save-btn" id="adminLoginBtn" onclick="adminLogin()">Ingresar</button>
+  </div>
+
+  <!-- PANEL -->
+  <div id="adminContent" style="display:none;">
+    <div class="admin-user-bar">
+      <span class="admin-user-email" id="adminUserEmail"></span>
+      <button class="admin-logout" onclick="adminLogout()">Cerrar sesión</button>
+    </div>
+    <div class="admin-body">
+      <div>
+        <div class="admin-section-title">Agregar producto</div>
+        <input class="admin-input" id="adminName" placeholder="Nombre del producto *" type="text">
+        <input class="admin-input" id="adminTag" placeholder="Categoría (ej: Mujer · Vestidos)" type="text">
+        <input class="admin-input" id="adminPrice" placeholder="Precio en ARS *" type="number">
+        <input class="admin-input" id="adminImg" placeholder="URL de la imagen (de Dropi)" type="url">
+        <button class="admin-save-btn" id="adminSaveBtn" onclick="saveProduct()">Agregar producto</button>
+      </div>
+      <div>
+        <div class="admin-section-title">Productos cargados</div>
+        <div id="adminProductList"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+</body>
+</html>
